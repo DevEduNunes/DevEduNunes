@@ -16,6 +16,8 @@ GAP = 3
 MARGIN = 20
 FRAME_DURATION_MS = 90
 LOOP_PAUSE_FRAMES = 12
+EAT_LAST_PAUSE_FRAMES = 10
+INITIAL_LENGTH = 3
 
 PALETTES = {
     "light": {
@@ -125,13 +127,17 @@ def shortest_path_to_nearest(start, targets, n_weeks):
 
 def simulate(counts, n_weeks, start=(0, 0)):
     """Moves the snake toward the nearest remaining food cell at each step,
-    growing whenever it lands on one. Returns list of (segments, eaten)."""
+    growing whenever it lands on one. Once all food is eaten, it pauses and
+    travels back to the starting cell. Returns list of (segments, eaten)."""
     food = {cell for cell, c in counts.items() if c > 0}
     eaten = set()
-    snake = deque([start])
-    if start in food:
-        food.discard(start)
-        eaten.add(start)
+
+    # start with a short head-to-tail body instead of a single dot
+    snake = deque((start[0], min(start[1] + i, 6)) for i in range(INITIAL_LENGTH))
+    for cell in snake:
+        if cell in food:
+            food.discard(cell)
+            eaten.add(cell)
 
     frames = [(list(snake), set(eaten))]
 
@@ -144,6 +150,17 @@ def simulate(counts, n_weeks, start=(0, 0)):
                 eaten.add(cell)
             else:
                 snake.pop()
+            frames.append((list(snake), set(eaten)))
+
+    # stop for a moment after eating the last square...
+    frames.extend([frames[-1]] * EAT_LAST_PAUSE_FRAMES)
+
+    # ...then head back to the starting point
+    return_path = shortest_path_to_nearest(snake[0], {start}, n_weeks)
+    if return_path:
+        for cell in return_path[1:]:
+            snake.appendleft(cell)
+            snake.pop()
             frames.append((list(snake), set(eaten)))
 
     return frames
@@ -168,11 +185,22 @@ def render_gif(frames, counts, n_weeks, palette_name: str, out_path: str):
                 [x, y, x + CELL, y + CELL], radius=3, fill=palette["levels"][level]
             )
 
+        tail_len = len(snake) - 1
         for i, (w, d) in enumerate(snake):
-            x = MARGIN + w * (CELL + GAP)
-            y = MARGIN + d * (CELL + GAP)
+            dist_from_tail = tail_len - i
+            if dist_from_tail == 0:
+                size = max(6, round(CELL * 0.5))
+            elif dist_from_tail == 1:
+                size = max(8, round(CELL * 0.75))
+            else:
+                size = CELL
+            offset = (CELL - size) / 2
+            x = MARGIN + w * (CELL + GAP) + offset
+            y = MARGIN + d * (CELL + GAP) + offset
             color = palette["snake_head"] if i == 0 else palette["snake_body"]
-            draw.rounded_rectangle([x, y, x + CELL, y + CELL], radius=4, fill=color)
+            draw.rounded_rectangle(
+                [x, y, x + size, y + size], radius=max(2, size // 4), fill=color
+            )
 
         images.append(img)
 
