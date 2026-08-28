@@ -27,8 +27,8 @@ PALETTES = {
             (48, 161, 78),
             (33, 110, 57),
         ],
-        "snake_head": (255, 87, 34),
-        "snake_body": (33, 33, 33),
+        "snake_head": (156, 39, 176),
+        "snake_body": (106, 27, 154),
     },
     "dark": {
         "bg": (13, 17, 23),
@@ -39,8 +39,8 @@ PALETTES = {
             (38, 166, 65),
             (57, 211, 83),
         ],
-        "snake_head": (255, 138, 101),
-        "snake_body": (230, 230, 230),
+        "snake_head": (225, 160, 255),
+        "snake_body": (171, 71, 188),
     },
 }
 
@@ -97,31 +97,54 @@ def build_grid(weeks):
     return counts, n_weeks
 
 
-def build_path(n_weeks: int):
-    """Boustrophedon path: down column 0, up column 1, down column 2, ..."""
-    path = []
-    for w in range(n_weeks):
-        rows = range(7) if w % 2 == 0 else range(6, -1, -1)
-        for d in rows:
-            path.append((w, d))
-    return path
+def shortest_path_to_nearest(start, targets, n_weeks):
+    """BFS from start to the nearest cell in targets. Returns the path
+    (including start), or None if targets is empty."""
+    if not targets:
+        return None
+    visited = {start}
+    parent = {}
+    queue = deque([start])
+    while queue:
+        cur = queue.popleft()
+        if cur in targets:
+            path = [cur]
+            while path[-1] != start:
+                path.append(parent[path[-1]])
+            path.reverse()
+            return path
+        w, d = cur
+        for nb in ((w + 1, d), (w - 1, d), (w, d + 1), (w, d - 1)):
+            nw, nd = nb
+            if 0 <= nw < n_weeks and 0 <= nd < 7 and nb not in visited:
+                visited.add(nb)
+                parent[nb] = cur
+                queue.append(nb)
+    return None
 
 
-def simulate(path, counts):
-    """Returns list of frames; each frame is (snake_segments, eaten_set)."""
-    frames = []
+def simulate(counts, n_weeks, start=(0, 0)):
+    """Moves the snake toward the nearest remaining food cell at each step,
+    growing whenever it lands on one. Returns list of (segments, eaten)."""
+    food = {cell for cell, c in counts.items() if c > 0}
     eaten = set()
-    snake = deque([path[0]])
-    frames.append((list(snake), set(eaten)))
+    snake = deque([start])
+    if start in food:
+        food.discard(start)
+        eaten.add(start)
 
-    for cell in path[1:]:
-        snake.appendleft(cell)
-        grew = counts.get(cell, 0) > 0 and cell not in eaten
-        if grew:
-            eaten.add(cell)
-        else:
-            snake.pop()
-        frames.append((list(snake), set(eaten)))
+    frames = [(list(snake), set(eaten))]
+
+    while food:
+        path = shortest_path_to_nearest(snake[0], food, n_weeks)
+        for cell in path[1:]:
+            snake.appendleft(cell)
+            if cell in food:
+                food.discard(cell)
+                eaten.add(cell)
+            else:
+                snake.pop()
+            frames.append((list(snake), set(eaten)))
 
     return frames
 
@@ -175,8 +198,7 @@ def main():
 
     weeks = fetch_contribution_calendar(login, token)
     counts, n_weeks = build_grid(weeks)
-    path = build_path(n_weeks)
-    frames = simulate(path, counts)
+    frames = simulate(counts, n_weeks)
 
     render_gif(frames, counts, n_weeks, "light", os.path.join(out_dir, "snake-grow.gif"))
     render_gif(frames, counts, n_weeks, "dark", os.path.join(out_dir, "snake-grow-dark.gif"))
