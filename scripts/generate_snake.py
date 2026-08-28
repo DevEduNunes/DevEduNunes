@@ -16,7 +16,6 @@ GAP = 3
 MARGIN = 20
 FRAME_DURATION_MS = 90
 LOOP_PAUSE_FRAMES = 12
-EAT_LAST_PAUSE_FRAMES = 10
 INITIAL_LENGTH = 3
 
 PALETTES = {
@@ -127,8 +126,8 @@ def shortest_path_to_nearest(start, targets, n_weeks):
 
 def simulate(counts, n_weeks, start=(0, 0)):
     """Moves the snake toward the nearest remaining food cell at each step,
-    growing whenever it lands on one. Once all food is eaten, it pauses and
-    travels back to the starting cell. Returns list of (segments, eaten)."""
+    growing whenever it lands on one. Once all food is eaten, it travels
+    straight back to the starting cell. Returns list of (segments, eaten)."""
     food = {cell for cell, c in counts.items() if c > 0}
     eaten = set()
 
@@ -152,10 +151,7 @@ def simulate(counts, n_weeks, start=(0, 0)):
                 snake.pop()
             frames.append((list(snake), set(eaten)))
 
-    # stop for a moment after eating the last square...
-    frames.extend([frames[-1]] * EAT_LAST_PAUSE_FRAMES)
-
-    # ...then head back to the starting point
+    # head straight back to the starting point
     return_path = shortest_path_to_nearest(snake[0], {start}, n_weeks)
     if return_path:
         for cell in return_path[1:]:
