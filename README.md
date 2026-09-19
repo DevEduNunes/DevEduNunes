@@ -2,6 +2,7 @@
 
 - 🔭 Trabalho com **Power BI | DAX | Fabric**
 - 🌱 Estudando **Engenharia de Dados**
+- 🌱 Estudando **Cybersecurity on TryHackMe**
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/snake-grow-dark.gif">
