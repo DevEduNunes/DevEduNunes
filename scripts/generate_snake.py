@@ -98,36 +98,128 @@ def build_grid(weeks):
     return counts, n_weeks
 
 
-def shortest_path_to_nearest(start, targets, n_weeks):
-    """BFS from start to the nearest cell in targets. Returns the path
-    (including start), or None if targets is empty."""
-    if not targets:
-        return None
-    visited = {start}
-    parent = {}
-    queue = deque([start])
+def neighbors(cell, n_weeks):
+    w, d = cell
+    for nw, nd in ((w + 1, d), (w - 1, d), (w, d + 1), (w, d - 1)):
+        if 0 <= nw < n_weeks and 0 <= nd < 7:
+            yield (nw, nd)
+
+
+def bfs_tree(snake, n_weeks, food=frozenset()):
+    """BFS from the snake's head that never crosses the snake's own body. A
+    body cell only counts as blocked until the tail has moved past it, so the
+    snake may follow its own tail. Returns (parent, order): parent links for
+    path reconstruction and every reached cell in increasing distance. Food
+    cells can be reached but never crossed, so a path grows the snake at most
+    once, on its last step."""
+    length = len(snake)
+    body_index = {cell: i for i, cell in enumerate(snake)}
+    head = snake[0]
+    parent = {head: None}
+    order = []
+    queue = deque([(head, 0)])
     while queue:
-        cur = queue.popleft()
-        if cur in targets:
-            path = [cur]
-            while path[-1] != start:
-                path.append(parent[path[-1]])
-            path.reverse()
-            return path
-        w, d = cur
-        for nb in ((w + 1, d), (w - 1, d), (w, d + 1), (w, d - 1)):
-            nw, nd = nb
-            if 0 <= nw < n_weeks and 0 <= nd < 7 and nb not in visited:
-                visited.add(nb)
-                parent[nb] = cur
-                queue.append(nb)
+        cur, moves = queue.popleft()
+        if moves > 0:
+            order.append(cur)
+            if cur in food:
+                continue
+        for nb in neighbors(cur, n_weeks):
+            if nb in parent:
+                continue
+            idx = body_index.get(nb)
+            # after moves + 1 steps, body cell idx is still occupied if
+            # moves + 1 <= length - 1 - idx
+            if idx is not None and moves + 1 < length - idx:
+                continue
+            parent[nb] = cur
+            queue.append((nb, moves + 1))
+    return parent, order
+
+
+def path_from_tree(parent, target):
+    path = [target]
+    while parent[path[-1]] is not None:
+        path.append(parent[path[-1]])
+    path.pop()  # drop the head
+    path.reverse()
+    return path
+
+
+def find_path(snake, targets, n_weeks, food=frozenset()):
+    """Shortest body-avoiding path (head excluded) to the nearest target, or
+    None if no target is reachable."""
+    parent, order = bfs_tree(snake, n_weeks, food)
+    for cell in order:
+        if cell in targets:
+            return path_from_tree(parent, cell)
     return None
+
+
+def moved(snake, path, food):
+    """The snake after walking path (growing on food cells)."""
+    body = deque(snake)
+    for cell in path:
+        body.appendleft(cell)
+        if cell not in food:
+            body.pop()
+    return body
+
+
+def is_safe(snake, n_weeks, food):
+    """A snake is safe when its head can still reach its own tail, so it
+    can never get walled in by its body."""
+    return find_path(snake, {snake[-1]}, n_weeks, food) is not None
+
+
+def safe_food_path(snake, food, n_weeks):
+    """Path to the nearest food cell that leaves the snake safe, or None."""
+    parent, order = bfs_tree(snake, n_weeks, food)
+    for cell in order:
+        if cell in food:
+            path = path_from_tree(parent, cell)
+            if is_safe(moved(snake, path, food), n_weeks, food - {cell}):
+                return path
+    return None
+
+
+def reachable_area(snake, cell, n_weeks):
+    """Number of free cells reachable from cell, treating the body as walls
+    (the tail is about to move, so it counts as free)."""
+    blocked = set(list(snake)[:-1])
+    seen = {cell}
+    stack = [cell]
+    while stack:
+        cur = stack.pop()
+        for nb in neighbors(cur, n_weeks):
+            if nb not in seen and nb not in blocked:
+                seen.add(nb)
+                stack.append(nb)
+    return len(seen)
+
+
+def escape_step(snake, n_weeks):
+    """One safe step used when no food is reachable: move to the free
+    neighbour that keeps the most room open. Returns None if boxed in."""
+    blocked = set(list(snake)[:-1])
+    best, best_area = None, -1
+    for nb in neighbors(snake[0], n_weeks):
+        if nb in blocked:
+            continue
+        area = reachable_area(snake, nb, n_weeks)
+        if area > best_area:
+            best, best_area = nb, area
+    return best
+
+
+MAX_ESCAPE_STEPS = 300
 
 
 def simulate(counts, n_weeks, start=(0, 0)):
     """Moves the snake toward the nearest remaining food cell at each step,
-    growing whenever it lands on one. Once all food is eaten, it travels
-    straight back to the starting cell. Returns list of (segments, eaten)."""
+    growing whenever it lands on one. The body is solid: the snake never runs
+    into itself. Once all food is eaten, it heads back to the starting cell
+    if a free route exists. Returns list of (segments, eaten)."""
     food = {cell for cell, c in counts.items() if c > 0}
     eaten = set()
 
@@ -140,24 +232,36 @@ def simulate(counts, n_weeks, start=(0, 0)):
 
     frames = [(list(snake), set(eaten))]
 
-    while food:
-        path = shortest_path_to_nearest(snake[0], food, n_weeks)
-        for cell in path[1:]:
-            snake.appendleft(cell)
-            if cell in food:
-                food.discard(cell)
-                eaten.add(cell)
-            else:
-                snake.pop()
-            frames.append((list(snake), set(eaten)))
-
-    # head straight back to the starting point
-    return_path = shortest_path_to_nearest(snake[0], {start}, n_weeks)
-    if return_path:
-        for cell in return_path[1:]:
-            snake.appendleft(cell)
+    def advance(cell):
+        snake.appendleft(cell)
+        if cell in food:
+            food.discard(cell)
+            eaten.add(cell)
+        else:
             snake.pop()
-            frames.append((list(snake), set(eaten)))
+        frames.append((list(snake), set(eaten)))
+
+    stuck_steps = 0
+    while food:
+        path = safe_food_path(snake, food, n_weeks)
+        if path is None:
+            # no food can be eaten safely right now: keep moving (chasing the
+            # tail) until the body opens up
+            step = escape_step(snake, n_weeks)
+            stuck_steps += 1
+            if step is None or stuck_steps > MAX_ESCAPE_STEPS:
+                break
+            advance(step)
+            continue
+        stuck_steps = 0
+        for cell in path:
+            advance(cell)
+
+    # head back to the starting point when a free route exists
+    return_path = find_path(snake, {start}, n_weeks, food) if snake[0] != start else None
+    if return_path:
+        for cell in return_path:
+            advance(cell)
 
     return frames
 
