@@ -28,7 +28,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push snake gif to output branch
+      - name: Generate hero shooter animation
+        run: python scripts/generate_hero.py dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push gifs to output branch
         uses: crazy-max/ghaction-github-pages@v4
         with:
           target_branch: output

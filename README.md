@@ -5,6 +5,12 @@
 - 🌱 Estudando **Cybersecurity on TryHackMe**
 
 <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/hero-shooter-dark.gif">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/hero-shooter.gif">
+  <img alt="hero shooting commits" src="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/hero-shooter.gif">
+</picture>
+
+<picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/snake-grow-dark.gif">
   <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/snake-grow.gif">
   <img alt="snake gif" src="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/snake-grow.gif">
