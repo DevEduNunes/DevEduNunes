@@ -1,12 +1,16 @@
 """Generates a 2D Minecraft world GIF out of a GitHub user's contribution graph.
 
-The contribution graph is the underground: every square is a block (dirt when
-there are no commits, mossy green when there are, the darker the more commits).
-Steve chops a tree, crafts a stone pickaxe at the crafting table, turns a
-commit into iron ore and mines it, crafts an iron pickaxe, turns another commit
-into diamond ore, mines it and finally crafts diamond armor.
+The contribution graph is the underground: the surface row is dirt and grass,
+everything below is stone, and squares with commits are tinted green (the more
+commits, the darker). Steve follows the real crafting chain:
 
-Reuses the contribution fetching from generate_snake.py.
+    chop a tree -> wooden pickaxe -> 3 cobblestone -> stone pickaxe
+    -> mine an iron vein (3 ores) -> iron pickaxe
+    -> mine a diamond vein (10 ores) -> diamond armor + diamond sword
+    -> a zombie shows up and Steve fights it off
+
+Ore veins grow from random commits (the pick changes daily, override it with
+MINECRAFT_SEED). Reuses the contribution fetching from generate_snake.py.
 """
 
 import math
@@ -14,9 +18,10 @@ import os
 import random
 import sys
 import zlib
+from collections import deque
 from datetime import date
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from generate_snake import build_grid, fetch_contribution_calendar, level_for_count
 
@@ -27,8 +32,15 @@ ROWS = 7
 SCALE = 2  # Steve's pixel size
 FRAME_MS = 70
 LOOP_PAUSE_FRAMES = 18
-WALK_STEP = 26
-CLIMB_STEP = 2 * B
+WALK_STEP = 32
+
+IRON_VEIN = 3  # iron pickaxe: 3 ingots
+DIAMOND_VEIN = 10  # chestplate: 8 diamonds + sword: 2 diamonds
+
+try:
+    FONT = ImageFont.load_default(size=10)
+except Exception:  # older Pillow without a sized default font
+    FONT = None
 
 # --- Steve ----------------------------------------------------------------
 # 12x15 upper body (head, torso, arms); legs are drawn separately to animate.
@@ -68,17 +80,29 @@ ARMOR_SHADE = (40, 165, 165)
 ARMOR_LIGHT = (200, 255, 250)
 STICK = (130, 90, 45)
 
+ZOMBIE = {
+    "H": (48, 92, 44),
+    "S": (92, 146, 68),
+    "E": (20, 24, 20),
+    "M": (52, 100, 48),
+    "T": (0, 150, 160),
+}
+ZOMBIE_PANTS = (48, 48, 140)
+ZOMBIE_SHOES = (70, 70, 76)
+
 # --- Items ----------------------------------------------------------------
+PLANK = (170, 125, 70)
 COBBLE = (150, 150, 150)
 IRON = (232, 232, 232)
 DIAMOND = (92, 235, 225)
 STICK_ITEM = (140, 100, 50)
-HEADS = {"stone": (150, 150, 155), "iron": (235, 235, 235)}
-HEAD_EDGE = (70, 70, 75)
+HEADS = {"wood": (166, 124, 70), "stone": (150, 150, 155), "iron": (235, 235, 235)}
+HEAD_EDGE = (60, 60, 66)
 
 RECIPES = {
     "pickaxe": ["XXX", ".S.", ".S."],
     "chest": ["X.X", "XXX", "XXX"],
+    "sword": [".X.", ".X.", ".S."],
 }
 
 # --- Terrain --------------------------------------------------------------
@@ -88,6 +112,7 @@ CAVE = (78, 62, 50)
 LEAVES = (54, 138, 56)
 LOG = (102, 81, 51)
 GRASS = (95, 168, 62)
+ORE_COLORS = {"iron": (222, 184, 150), "diamond": (92, 235, 225)}
 MOSS = {
     "light": [(155, 233, 168), (64, 196, 99), (48, 161, 78), (33, 110, 57)],
     "dark": [(14, 68, 41), (0, 109, 50), (38, 166, 65), (57, 211, 83)],
@@ -111,6 +136,11 @@ def col_x(w):
 def top_y(d):
     """Y of the top edge of grid row d."""
     return SKY + d * B
+
+
+def layout(n_weeks):
+    """Grid columns of the tree, the crafting table and the cobblestone shaft."""
+    return 2, 6, 9
 
 
 # --- Tiles ----------------------------------------------------------------
@@ -171,32 +201,20 @@ def log_tile(rng, dark):
 
 
 # --- Sprites --------------------------------------------------------------
-def draw_steve(draw, cx, feet, walk, swing, aim, tool, armor):
-    """swing: None (idle) or 0 (raised) / 1 (down). aim: 'side' or 'down'."""
-    sw = len(BODY[0]) * SCALE
-    x0 = int(cx - sw // 2)
+def draw_body(draw, cx, feet, walk, face, color_for, pants, shoes, skip_arms=False):
+    """Draws the blocky body (mirrored when face < 0). Returns (x0, y_top)."""
+    x0 = int(cx - len(BODY[0]) * SCALE // 2)
     y_top = int(feet - SPRITE_H)
-
+    last = len(BODY[0]) - 1
     for r, row in enumerate(BODY):
         for c, ch in enumerate(row):
-            if ch == ".":
+            if ch == "." or (skip_arms and r >= 8 and (c <= 1 or c >= 10)):
                 continue
-            color = COLORS[ch]
-            if armor:
-                if ch == "H" or ch == "T":
-                    color = ARMOR
-                elif ch == "S" and r in (8, 9) and (c <= 1 or c >= 10):
-                    color = ARMOR_SHADE
-                if ch == "T" and (r, c) in ((7, 3), (7, 4), (8, 4), (8, 3)):
-                    color = ARMOR_LIGHT
-                if ch == "H" and r == 0 and c in (3, 4, 5):
-                    color = ARMOR_LIGHT
-            px, py = x0 + c * SCALE, y_top + r * SCALE
-            draw.rectangle([px, py, px + SCALE - 1, py + SCALE - 1], fill=color)
+            col = c if face > 0 else last - c
+            px, py = x0 + col * SCALE, y_top + r * SCALE
+            draw.rectangle([px, py, px + SCALE - 1, py + SCALE - 1], fill=color_for(r, c, ch))
 
     legs_y = y_top + (BODY_H - 2) * SCALE
-    pants = ARMOR_SHADE if armor else PANTS
-    shoes = (30, 115, 125) if armor else SHOES
     for i, lx in enumerate((x0 + 2 * SCALE, x0 + 6 * SCALE)):
         lift = SCALE if (walk and (walk + i) % 2 == 0) else 0
         draw.rectangle([lx, legs_y, lx + 4 * SCALE - 1, legs_y + 4 * SCALE - 1 - lift], fill=pants)
@@ -204,30 +222,108 @@ def draw_steve(draw, cx, feet, walk, swing, aim, tool, armor):
             [lx, legs_y + 4 * SCALE - lift, lx + 4 * SCALE - 1, legs_y + 6 * SCALE - 1 - lift * 2],
             fill=shoes,
         )
+    return x0, y_top
 
-    hand = (x0 + 11 * SCALE, y_top + 11 * SCALE)
+
+def steve_colors(armor):
+    def color_for(r, c, ch):
+        color = COLORS[ch]
+        if armor:
+            if ch in ("H", "T"):
+                color = ARMOR
+            elif ch == "S" and r in (8, 9) and (c <= 1 or c >= 10):
+                color = ARMOR_SHADE
+            if ch == "T" and (r, c) in ((7, 3), (7, 4), (8, 4), (8, 3)):
+                color = ARMOR_LIGHT
+            if ch == "H" and r == 0 and c in (3, 4, 5):
+                color = ARMOR_LIGHT
+        return color
+
+    return color_for
+
+
+def arch(tip, ux, uy, lat, fwd_center, fwd_end):
+    """Points of a pickaxe head: an arc across the handle tip, ends bent back."""
+    px, py = -uy, ux
+    pts = []
+    for s in (-1, -0.5, 0, 0.5, 1):
+        f = fwd_center - (fwd_center - fwd_end) * s * s
+        pts.append((tip[0] + ux * f + px * lat * s, tip[1] + uy * f + py * lat * s))
+    return pts
+
+
+def tool_angle(swing, aim, tool):
     if swing is None:
-        angle = -25
-    elif aim == "down":
-        angle = -35 if swing == 0 else 80
-    else:
-        angle = -60 if swing == 0 else 10
-    angle = math.radians(angle)
+        return -25
+    angles = {"side": (-60, 10), "down": (-35, 80), "up": (10, -80)}
+    if tool == "sword":
+        angles["side"] = (-85, 15)
+    return angles[aim][swing]
+
+
+def draw_tool(draw, hand, tool, swing, aim, face):
+    angle = math.radians(tool_angle(swing, aim, tool))
+    if face < 0:
+        angle = math.pi - angle
+    ux, uy = math.cos(angle), math.sin(angle)
+    px, py = -uy, ux
 
     if tool is None:
         if swing is not None:  # bare-handed punch
-            tip = (hand[0] + math.cos(angle) * 9, hand[1] + math.sin(angle) * 9)
+            tip = (hand[0] + ux * 9, hand[1] + uy * 9)
             draw.line([hand, tip], fill=SKIN, width=5)
         return
 
-    length = 20
-    tip = (hand[0] + math.cos(angle) * length, hand[1] + math.sin(angle) * length)
-    draw.line([hand, tip], fill=STICK, width=4)
-    px, py = math.cos(angle + math.pi / 2), math.sin(angle + math.pi / 2)
-    a = (tip[0] + px * 8, tip[1] + py * 8)
-    b = (tip[0] - px * 8, tip[1] - py * 8)
-    draw.line([a, b], fill=HEADS[tool], width=5)
-    draw.line([a, b], fill=HEAD_EDGE, width=1)
+    if tool == "sword":
+        guard = (hand[0] + ux * 6, hand[1] + uy * 6)
+        tip = (hand[0] + ux * 30, hand[1] + uy * 30)
+        draw.line([hand, guard], fill=STICK, width=3)
+        draw.line([(guard[0] - px * 5, guard[1] - py * 5), (guard[0] + px * 5, guard[1] + py * 5)],
+                  fill=(90, 70, 40), width=3)
+        draw.line([guard, tip], fill=(30, 140, 150), width=5)
+        draw.line([guard, tip], fill=DIAMOND, width=3)
+        draw.line([(guard[0] + ux * 3, guard[1] + uy * 3), (tip[0] - ux, tip[1] - uy)],
+                  fill=(225, 255, 252), width=1)
+        return
+
+    tip = (hand[0] + ux * 19, hand[1] + uy * 19)
+    draw.line([hand, tip], fill=STICK, width=3)
+    pts = arch(tip, ux, uy, 9, 3, -5)
+    draw.line(pts, fill=HEAD_EDGE, width=5, joint="curve")
+    draw.line(pts, fill=HEADS[tool], width=3, joint="curve")
+
+
+def draw_steve(draw, cx, feet, walk, face, swing, aim, tool, armor):
+    """swing: None (idle) or 0 (raised) / 1 (strike). aim: 'side', 'down' or 'up'."""
+    pants = ARMOR_SHADE if armor else PANTS
+    shoes = (30, 115, 125) if armor else SHOES
+    x0, y_top = draw_body(draw, cx, feet, walk, face, steve_colors(armor), pants, shoes)
+    hand = (x0 + (11 if face > 0 else 1) * SCALE, y_top + 11 * SCALE)
+    draw_tool(draw, hand, tool, swing, aim, face)
+
+
+def draw_zombie(draw, cx, feet, walk, face, hurt):
+    def tint(c):
+        return tuple((a + b) // 2 for a, b in zip(c, (225, 40, 40))) if hurt else c
+
+    x0, y_top = draw_body(
+        draw, cx, feet, walk, face, lambda r, c, ch: tint(ZOMBIE[ch]),
+        tint(ZOMBIE_PANTS), tint(ZOMBIE_SHOES), skip_arms=True,
+    )
+    y = y_top + 8 * SCALE
+    if face < 0:
+        draw.rectangle([x0 - 14, y, x0 + 4, y + 6], fill=tint(ZOMBIE["S"]))
+        draw.rectangle([x0, y, x0 + 4, y + 6], fill=tint(ZOMBIE["T"]))
+    else:
+        w = len(BODY[0]) * SCALE
+        draw.rectangle([x0 + w - 4, y, x0 + w + 14, y + 6], fill=tint(ZOMBIE["S"]))
+        draw.rectangle([x0 + w - 4, y, x0 + w, y + 6], fill=tint(ZOMBIE["T"]))
+
+
+def draw_alert(draw, cx, feet):
+    x, y = int(cx), int(feet - SPRITE_H - 20)
+    draw.rectangle([x - 2, y, x + 2, y + 10], fill=(230, 40, 40))
+    draw.rectangle([x - 2, y + 13, x + 2, y + 16], fill=(230, 40, 40))
 
 
 def draw_table(draw, x, y):
@@ -248,11 +344,21 @@ def icon(draw, name, x, y):
         draw.rectangle([x + 1, y + 1, x + 14, y + 14], fill=(102, 81, 51), outline=(70, 52, 30))
         draw.rectangle([x + 4, y + 4, x + 11, y + 11], fill=(160, 126, 78))
         draw.rectangle([x + 6, y + 6, x + 9, y + 9], fill=(120, 92, 55))
-    elif name in ("stone_pick", "iron_pick"):
-        head = HEADS["stone" if name == "stone_pick" else "iron"]
+    elif name == "cobble":
+        draw.rectangle([x + 1, y + 1, x + 14, y + 14], fill=(140, 140, 140), outline=(70, 70, 74))
+        for dx, dy in ((3, 3), (9, 4), (5, 9), (10, 10), (3, 12)):
+            draw.rectangle([x + dx, y + dy, x + dx + 2, y + dy + 1], fill=(100, 100, 104))
+    elif name in ("wood_pick", "stone_pick", "iron_pick"):
+        head = HEADS[name.split("_")[0]]
         draw.line([(x + 3, y + 14), (x + 11, y + 6)], fill=STICK, width=2)
-        draw.line([(x + 3, y + 8), (x + 6, y + 3), (x + 11, y + 2), (x + 14, y + 6)], fill=HEAD_EDGE, width=4)
-        draw.line([(x + 3, y + 8), (x + 6, y + 3), (x + 11, y + 2), (x + 14, y + 6)], fill=head, width=2)
+        pts = arch((x + 11, y + 6), 0.707, -0.707, 6, 2, -3)
+        draw.line(pts, fill=HEAD_EDGE, width=4, joint="curve")
+        draw.line(pts, fill=head, width=2, joint="curve")
+    elif name == "sword":
+        draw.line([(x + 2, y + 14), (x + 5, y + 11)], fill=STICK, width=2)
+        draw.line([(x + 3, y + 9), (x + 7, y + 13)], fill=(90, 70, 40), width=2)
+        draw.line([(x + 5, y + 11), (x + 14, y + 2)], fill=(30, 140, 150), width=4)
+        draw.line([(x + 5, y + 11), (x + 14, y + 2)], fill=DIAMOND, width=2)
     elif name == "iron":
         draw.rectangle([x + 2, y + 5, x + 13, y + 11], fill=IRON, outline=(120, 120, 125))
         draw.line([(x + 3, y + 6), (x + 12, y + 6)], fill=(255, 255, 255))
@@ -268,6 +374,15 @@ def icon(draw, name, x, y):
         draw.line([(x + 5, y + 6), (x + 5, y + 11)], fill=ARMOR_LIGHT)
 
 
+def draw_count(draw, x, y, n):
+    text = str(n)
+    try:
+        draw.text((x + 1, y + 1), text, fill=(20, 20, 20), font=FONT, anchor="rb")
+        draw.text((x, y), text, fill=(255, 255, 255), font=FONT, anchor="rb")
+    except Exception:  # bitmap fallback font has no anchors
+        draw.text((x - 8, y - 10), text, fill=(255, 255, 255))
+
+
 def draw_hotbar(draw, width, inv):
     slot = 28
     x0 = width - 12 - 5 * (slot + 2)
@@ -276,7 +391,10 @@ def draw_hotbar(draw, width, inv):
         draw.rectangle([sx, 10, sx + slot - 1, 10 + slot - 1], fill=(58, 58, 64), outline=(18, 18, 22))
         draw.rectangle([sx + 1, 11, sx + slot - 2, 11 + slot - 2], outline=(130, 130, 140))
         if i < len(inv):
-            icon(draw, inv[i], sx + 6, 16)
+            name, count = inv[i]
+            icon(draw, name, sx + 6, 16)
+            if count > 1:
+                draw_count(draw, sx + slot - 3, 10 + slot - 2, count)
 
 
 def draw_craft(draw, cx, ground_top, craft):
@@ -316,13 +434,24 @@ def draw_sparkles(draw, cx, cy, phase, spread=26):
 
 
 # --- Script ---------------------------------------------------------------
-class Director:
-    """Records the animation as frame descriptors, tracking world state."""
+NEIGHBORS = ((1, 0), (-1, 0), (0, -1), (0, 1))
 
-    def __init__(self):
+
+class Director:
+    """Records the animation as frame descriptors, tracking world state.
+
+    Steve always stands in an open cell (the sky row above the grid is d = -1,
+    mined cells become open) and walks, climbs or drops between open cells.
+    """
+
+    def __init__(self, n_weeks, table_x):
+        self.n = n_weeks
+        self.table_x = table_x
         self.frames = []
         self.x = -20.0
         self.feet = float(SKY)
+        self.cell = (-1, -1)
+        self.face = 1
         self.tool = None
         self.armor = False
         self.destroyed = set()
@@ -330,38 +459,214 @@ class Director:
         self.logs = 3
         self.leaves = True
         self.inv = []
+        self.zombie = None
 
+    # --- bookkeeping ---
     def add(self, **extra):
         frame = dict(
-            x=self.x, feet=self.feet, walk=0, swing=None, aim="side", tool=self.tool,
-            armor=self.armor, crack=None, burst=None, sparkle=None, craft=None, jump=0,
+            x=self.x, feet=self.feet, face=self.face, walk=0, swing=None, aim="side",
+            tool=self.tool, armor=self.armor, crack=None, burst=None, sparkle=None,
+            craft=None, jump=0, alert=False,
+            zombie=dict(self.zombie) if self.zombie else None,
             destroyed=set(self.destroyed), ores=dict(self.ores), logs=self.logs,
-            leaves=self.leaves, inv=list(self.inv),
+            leaves=self.leaves, inv=[tuple(i) for i in self.inv],
         )
         frame.update(extra)
         self.frames.append(frame)
 
+    def give(self, name, n=1):
+        for item in self.inv:
+            if item[0] == name:
+                item[1] += n
+                return
+        self.inv.append([name, n])
+
+    def take(self, name, n):
+        for item in self.inv:
+            if item[0] == name:
+                item[1] -= n
+        self.inv = [i for i in self.inv if i[1] > 0]
+
+    def set_pick(self, name):
+        self.inv = [i for i in self.inv if not i[0].endswith("_pick")]
+        self.inv.insert(0, [name, 1])
+        self.tool = name.split("_")[0]
+
+    # --- movement ---
+    def cell_of_x(self, x):
+        return max(-1, min(self.n, round((x - PAD - B / 2) / B)))
+
     def walk_to(self, target_x):
         phase = 0
+        if abs(target_x - self.x) > 0.5:
+            self.face = 1 if target_x > self.x else -1
         while abs(target_x - self.x) > 0.5:
             self.x += max(-WALK_STEP, min(WALK_STEP, target_x - self.x))
             phase += 1
             self.add(walk=phase)
+        if self.cell[1] == -1:
+            self.cell = (self.cell_of_x(self.x), -1)
 
-    def climb_out(self):
-        while self.feet > SKY + 0.5:
-            self.feet = max(float(SKY), self.feet - CLIMB_STEP)
-            self.add()
+    def is_open(self, cell):
+        w, d = cell
+        if d < -1:
+            return False
+        if d == -1:
+            return -1 <= w <= self.n
+        return 0 <= w < self.n and d < ROWS and cell in self.destroyed
+
+    def route(self, goals):
+        """Shortest walk/climb/drop path through open cells to any goal cell."""
+        start = self.cell
+        if start in goals:
+            return []
+        prev = {start: None}
+        queue = deque([start])
+        while queue:
+            cur = queue.popleft()
+            for dw, dd in NEIGHBORS:
+                nxt = (cur[0] + dw, cur[1] + dd)
+                if nxt in prev or not self.is_open(nxt):
+                    continue
+                prev[nxt] = cur
+                if nxt in goals:
+                    path = [nxt]
+                    while prev[path[-1]] != start:
+                        path.append(prev[path[-1]])
+                    return path[::-1]
+                queue.append(nxt)
+        return None
+
+    def follow(self, path):
+        i = 0
+        while i < len(path):
+            cw, cd = self.cell
+            nw, nd = path[i]
+            if nd == cd:  # merge a straight run into one walk
+                step = nw - cw
+                j = i
+                while j + 1 < len(path) and path[j + 1][1] == cd and path[j + 1][0] - path[j][0] == step:
+                    j += 1
+                self.walk_to(col_x(path[j][0]))
+                self.cell = path[j]
+                i = j + 1
+            else:
+                if abs(self.x - col_x(cw)) > 0.5:
+                    self.walk_to(col_x(cw))
+                self.feet += (nd - cd) * B
+                self.cell = path[i]
+                self.add()
+                i += 1
+
+    def go_surface(self, col=None):
+        goals = {(col if col is not None else w, -1) for w in range(-1, self.n + 1)}
+        self.follow(self.route(goals))
+
+    def go_table(self):
+        left = self.x < self.table_x
+        self.walk_to(self.table_x + (-30 if left else 30))
+        self.face = 1 if left else -1
+        self.add()
+
+    # --- actions ---
+    def mine(self, target):
+        w, d = target
+        above, left, right, below = (w, d - 1), (w - 1, d), (w + 1, d), (w, d + 1)
+        side_ok = [c for c in (above, left, right) if self.is_open(c)]
+        path = self.route(set(side_ok)) if side_ok else None
+        if path is None and self.is_open(below):
+            path = self.route({below})
+        if path is None:
+            raise RuntimeError(f"no way to reach {target}")
+        self.follow(path)
+
+        cw, cd = self.cell
+        if (cw, cd) == above:
+            aim = "down"
+        elif (cw, cd) == below:
+            aim = "up"
+        else:
+            aim = "side"
+            self.face = 1 if w > cw else -1
+        if abs(self.x - col_x(cw)) > 0.5:
+            self.walk_to(col_x(cw))
+            if aim == "side":
+                self.face = 1 if w > cw else -1
+
+        x, y = PAD + w * B, top_y(d)
+        for k, swing in enumerate((0, 1, 0)):
+            self.add(swing=swing, aim=aim, crack=(k + 1, x, y))
+        kind = self.ores.pop(target, "stone" if d >= 1 else "dirt")
+        self.destroyed.add(target)
+        burst = ORE_COLORS[kind] if kind in ORE_COLORS else target
+        self.add(burst=(x + B // 2, y + B // 2, burst))
+        if kind in ORE_COLORS:
+            self.give(kind)
+        elif kind == "stone":
+            self.give("cobble")
+        if aim == "down":  # step down into the hole
+            self.follow([target])
 
     def craft(self, recipe, mat, result, steps):
         for filled in steps:
             self.add(craft=dict(recipe=recipe, mat=mat, filled=filled, result=None, spark=0))
-        full = steps[-1]
         for spark in range(5):
-            self.add(craft=dict(recipe=recipe, mat=mat, filled=full, result=result, spark=spark))
+            self.add(craft=dict(recipe=recipe, mat=mat, filled=steps[-1], result=result, spark=spark))
+
+    def mine_vein(self, cluster, kind):
+        """Walk to the vein, turn the commits into ore, dig down and mine it all."""
+        entry = min(cluster, key=lambda c: (c[1], c[0]))
+        self.go_surface(entry[0])
+        cx = sum(col_x(w) for w, _ in cluster) / len(cluster)
+        cy = sum(top_y(d) + B / 2 for _, d in cluster) / len(cluster)
+        for phase in range(5):
+            if phase == 2:
+                for cell in cluster:
+                    self.ores[cell] = kind
+            self.add(sparkle=(cx, cy, phase))
+        for dd in range(entry[1]):
+            self.mine((entry[0], dd))
+        order, seen, queue = [entry], {entry}, deque([entry])
+        while queue:
+            w, dd = queue.popleft()
+            for dw, ddd in NEIGHBORS:
+                nb = (w + dw, dd + ddd)
+                if nb in cluster and nb not in seen:
+                    seen.add(nb)
+                    order.append(nb)
+                    queue.append(nb)
+        for cell in order:
+            self.mine(cell)
+
+    def zombie_fight(self, width):
+        self.face = 1
+        for _ in range(3):
+            self.add(alert=True)
+        self.zombie = dict(x=float(width + 20), walk=0, face=-1, hurt=False)
+        gap = 46
+        phase = 0
+        while self.zombie["x"] - self.x > gap + 0.5:
+            phase += 1
+            self.zombie["x"] = max(self.x + gap, self.zombie["x"] - 30)
+            self.zombie["walk"] = phase
+            self.add()
+        for hit in range(3):
+            self.zombie["walk"] = 0
+            self.add(swing=0)
+            self.zombie.update(hurt=True, x=self.zombie["x"] + 12)
+            self.add(swing=1)
+            self.zombie["hurt"] = False
+            if hit < 2:  # the zombie keeps coming
+                self.zombie.update(walk=hit + 1, x=max(self.x + gap, self.zombie["x"] - 12))
+                self.add()
+        self.zombie["hurt"] = True
+        self.add(swing=1)
+        zx = self.zombie["x"]
+        self.zombie = None
+        self.add(burst=(zx, SKY - SPRITE_H // 2, ZOMBIE["S"]))
 
 
-def pick_cell(counts, rows, rng, avoid_cols, min_dist=4):
+def pick_cell(counts, rows, rng, avoid_cols, min_dist):
     """A random commit square in one of the wanted rows, away from the given columns."""
     def far(w):
         return all(abs(w - a) >= min_dist for a in avoid_cols)
@@ -372,68 +677,97 @@ def pick_cell(counts, rows, rng, avoid_cols, min_dist=4):
     return rng.choice(sorted(cands))
 
 
+def grow_cluster(counts, anchor, size, rows, rng, n_weeks, avoid_cols, min_dist=2):
+    """An ore vein: grows from a commit square, preferring other commit squares."""
+    def ok(cell):
+        w, d = cell
+        return 0 <= w < n_weeks and d in rows and all(abs(w - a) >= min_dist for a in avoid_cols)
+
+    cluster = {anchor}
+    for _ in range(1000):
+        if len(cluster) >= size:
+            break
+        base = rng.choice(sorted(cluster))
+        nbs = [(base[0] + a, base[1] + b) for a, b in NEIGHBORS]
+        nbs = [c for c in nbs if c not in cluster and ok(c)]
+        if nbs:
+            cluster.add(rng.choices(nbs, [3 if counts.get(c, 0) > 0 else 1 for c in nbs])[0])
+    return cluster
+
+
 def build_script(counts, n_weeks):
-    d = Director()
-    tree_w, table_w = 3, max(6, round(n_weeks * 0.15))
+    width = PAD * 2 + n_weeks * B
+    tree_w, table_w, cobble_w = layout(n_weeks)
     tree_x, table_x = col_x(tree_w), col_x(table_w)
-    # ores land on random commits; the pick changes daily (override with MINECRAFT_SEED)
+    d = Director(n_weeks, table_x)
+
+    # veins grow from random commits; the pick changes daily (MINECRAFT_SEED fixes it)
     rng = random.Random(os.environ.get("MINECRAFT_SEED") or date.today().toordinal())
-    iron = pick_cell(counts, [1, 2, 3], rng, [tree_w, table_w])
-    diamond = pick_cell(counts, [4, 5, 6], rng, [tree_w, table_w, iron[0]])
+    keep_away = [tree_w, table_w, cobble_w]
+    iron = grow_cluster(counts, pick_cell(counts, [1, 2, 3], rng, keep_away, 3),
+                        IRON_VEIN, [1, 2, 3], rng, n_weeks, keep_away)
+    diamonds = grow_cluster(counts, pick_cell(counts, [4, 5, 6], rng, keep_away, 3),
+                            DIAMOND_VEIN, [4, 5, 6], rng, n_weeks, keep_away)
 
     # 1. chop the tree, bottom log first; the rest falls down a block each time
     d.walk_to(tree_x - 30)
-    for log in range(3):
-        for swing in (0, 1, 0, 1):
+    for _ in range(3):
+        for swing in (0, 1, 0):
             d.add(swing=swing, aim="side", crack=(1 + swing, tree_x - B // 2, SKY - B))
         d.logs -= 1
-        d.inv = ["log"]
-        d.add(burst=(tree_x, SKY - B // 2, tone(LOG, False)))
+        d.give("log")
+        d.add(burst=(tree_x, SKY - B // 2, LOG))
     d.leaves = False
     d.add(burst=(tree_x, SKY - B, LEAVES))
 
-    # 2. craft the stone pickaxe
-    d.walk_to(table_x - 30)
+    # 2. wooden pickaxe: 3 planks + 2 sticks
+    d.go_table()
+    d.craft("pickaxe", PLANK, "wood_pick", [1, 2, 3, 4, 5])
+    d.take("log", 3)
+    d.set_pick("wood_pick")
+    d.add()
+
+    # 3. mine 3 cobblestone (the surface row is only dirt)
+    d.go_surface(cobble_w)
+    for dd in range(4):
+        d.mine((cobble_w, dd))
+    d.go_surface()
+
+    # 4. stone pickaxe: 3 cobblestone + 2 sticks
+    d.go_table()
     d.craft("pickaxe", COBBLE, "stone_pick", [1, 2, 3, 4, 5])
-    d.tool, d.inv = "stone", ["stone_pick"]
+    d.take("cobble", 3)
+    d.set_pick("stone_pick")
     d.add()
 
-    def mine(cell, kind, item):
-        w, target_d = cell
-        d.walk_to(col_x(w))
-        cx, cy = col_x(w), top_y(target_d) + B // 2
-        for phase in range(5):  # the commit turns into ore
-            if phase == 2:
-                d.ores[cell] = kind
-            d.add(sparkle=(cx, cy, phase))
-        for dd in range(target_d + 1):
-            d.feet = float(top_y(dd))
-            for swing in (0, 1, 0, 1):
-                d.add(swing=swing, aim="down", crack=(1 + swing * 2, col_x(w) - B // 2, top_y(dd)))
-            d.destroyed.add((w, dd))
-            d.ores.pop((w, dd), None)
-            d.add(burst=(col_x(w), top_y(dd) + B // 2, (w, dd)))
-        d.feet = float(top_y(target_d + 1))
-        d.inv = d.inv + [item]
-        d.add()
-        d.add(sparkle=(col_x(w), top_y(target_d + 1) - 10, 1))
-        d.climb_out()
-
-    # 3. commit -> iron ore, mine it, craft the iron pickaxe
-    mine(iron, "iron", "iron")
-    d.walk_to(table_x + 30)
+    # 5. iron vein (3 ores) -> iron pickaxe
+    d.mine_vein(iron, "iron")
+    d.go_surface()
+    d.go_table()
     d.craft("pickaxe", IRON, "iron_pick", [1, 2, 3, 4, 5])
-    d.tool, d.inv = "iron", ["iron_pick"]
+    d.take("iron", IRON_VEIN)
+    d.set_pick("iron_pick")
     d.add()
 
-    # 4. commit -> diamond ore, mine it, craft the armor
-    mine(diamond, "diamond", "diamond")
-    d.walk_to(table_x + 30)
+    # 6. diamond vein (10 ores) -> chestplate (8) and sword (2)
+    d.mine_vein(diamonds, "diamond")
+    d.go_surface()
+    d.go_table()
     d.craft("chest", DIAMOND, "armor", [2, 4, 6, 8])
-    d.armor, d.inv = True, ["iron_pick", "armor"]
+    d.take("diamond", 8)
+    d.give("armor")
+    d.armor = True
+    d.add()
+    d.craft("sword", DIAMOND, "sword", [1, 2, 3])
+    d.take("diamond", 2)
+    d.give("sword")
+    d.tool = "sword"
     d.add()
 
-    # 5. celebrate
+    # 7. a zombie chases Steve, who fights it off
+    d.zombie_fight(width)
+
+    # 8. celebrate
     for _ in range(2):
         for j in (0, 8, 14, 18, 14, 8, 0):
             d.add(jump=j, sparkle=(d.x, d.feet - 30 - j, len(d.frames)))
@@ -515,7 +849,8 @@ def render(frames, counts, n_weeks, theme, out_path):
     world = World(counts, n_weeks, theme)
     dark = world.dark
     rng = random.Random(3)
-    tree_x, table_x = col_x(3), col_x(max(6, round(n_weeks * 0.15)))
+    tree_w, table_w, _ = layout(n_weeks)
+    tree_x, table_x = col_x(tree_w), col_x(table_w)
     images = []
 
     for f in frames:
@@ -562,7 +897,13 @@ def render(frames, counts, n_weeks, theme, out_path):
         if f["craft"] is not None:
             draw_craft(draw, table_x, SKY - B, f["craft"])
 
-        draw_steve(draw, f["x"], f["feet"] - f["jump"], f["walk"], f["swing"], f["aim"], f["tool"], f["armor"])
+        z = f["zombie"]
+        if z is not None:
+            draw_zombie(draw, z["x"], SKY, z["walk"], z["face"], z["hurt"])
+        draw_steve(draw, f["x"], f["feet"] - f["jump"], f["walk"], f["face"], f["swing"],
+                   f["aim"], f["tool"], f["armor"])
+        if f["alert"]:
+            draw_alert(draw, f["x"], f["feet"])
 
         if f["sparkle"] is not None:
             draw_sparkles(draw, *f["sparkle"][:2], f["sparkle"][2])
