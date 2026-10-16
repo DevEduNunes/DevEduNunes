@@ -28,8 +28,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate miner animation
-        run: python scripts/generate_miner.py dist
+      - name: Generate Minecraft world animation
+        run: python scripts/generate_minecraft.py dist
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

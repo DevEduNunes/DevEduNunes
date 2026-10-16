@@ -5,7 +5,7 @@
 - 🌱 Estudando **Cybersecurity on TryHackMe**
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/miner-dark.gif">
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/miner.gif">
-  <img alt="minecraft miner digging commits" src="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/miner.gif">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/minecraft-dark.gif">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/minecraft.gif">
+  <img alt="Steve crafting tools and armor in a 2D Minecraft world" src="https://raw.githubusercontent.com/DevEduNunes/DevEduNunes/output/minecraft.gif">
 </picture>
