@@ -14,6 +14,7 @@ import os
 import random
 import sys
 import zlib
+from datetime import date
 
 from PIL import Image, ImageDraw
 
@@ -148,8 +149,13 @@ def ore_tile(kind, rng, dark):
 
 
 def ground_tile(level, d, rng, dark):
-    base = tone(DIRT, dark) if level == 0 else MOSS["dark" if dark else "light"][level - 1]
-    img = noise_tile(base, rng)
+    if level > 0:
+        base = MOSS["dark" if dark else "light"][level - 1]
+    elif d == 0:
+        base = tone(DIRT, dark)
+    else:
+        base = tone(STONE, dark)
+    img = noise_tile(base, rng, amp=9 if level == 0 and d > 0 else 10)
     if d == 0:
         add_grass_top(img, rng, dark)
     return img
@@ -355,22 +361,25 @@ class Director:
             self.add(craft=dict(recipe=recipe, mat=mat, filled=full, result=result, spark=spark))
 
 
-def pick_cell(counts, n_weeks, target_w, rows):
-    """A commit square near column target_w in one of the wanted rows."""
-    target_w = max(0, min(n_weeks - 1, target_w))
-    cands = [(abs(w - target_w), w, d) for (w, d), c in counts.items() if c > 0 and d in rows]
-    if cands:
-        _, w, d = min(cands)
-        return w, d
-    return target_w, rows[0]
+def pick_cell(counts, rows, rng, avoid_cols, min_dist=4):
+    """A random commit square in one of the wanted rows, away from the given columns."""
+    def far(w):
+        return all(abs(w - a) >= min_dist for a in avoid_cols)
+
+    cands = [(w, d) for (w, d), c in counts.items() if c > 0 and d in rows and far(w)]
+    if not cands:  # no commit fits: any square will do
+        cands = [(w, d) for (w, d) in counts if d in rows and far(w)]
+    return rng.choice(sorted(cands))
 
 
 def build_script(counts, n_weeks):
     d = Director()
     tree_w, table_w = 3, max(6, round(n_weeks * 0.15))
     tree_x, table_x = col_x(tree_w), col_x(table_w)
-    iron = pick_cell(counts, n_weeks, round(n_weeks * 0.34), [1, 2, 3])
-    diamond = pick_cell(counts, n_weeks, round(n_weeks * 0.70), [4, 5, 6])
+    # ores land on random commits; the pick changes daily (override with MINECRAFT_SEED)
+    rng = random.Random(os.environ.get("MINECRAFT_SEED") or date.today().toordinal())
+    iron = pick_cell(counts, [1, 2, 3], rng, [tree_w, table_w])
+    diamond = pick_cell(counts, [4, 5, 6], rng, [tree_w, table_w, iron[0]])
 
     # 1. chop the tree, bottom log first; the rest falls down a block each time
     d.walk_to(tree_x - 30)
@@ -474,7 +483,7 @@ class World:
     def block_color(self, w, d):
         level = self.level(w, d)
         if level == 0:
-            return tone(DIRT, self.dark)
+            return tone(DIRT if d == 0 else STONE, self.dark)
         return MOSS[self.theme][level - 1]
 
     def _build_base(self):
