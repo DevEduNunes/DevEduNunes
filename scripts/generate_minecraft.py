@@ -7,8 +7,10 @@ commits, the darker). Steve follows the real crafting chain:
     chop a tree -> wooden pickaxe -> 3 cobblestone -> stone pickaxe
     -> mine an iron vein (3 ores) -> iron pickaxe
     -> mine a diamond vein (10 ores) -> diamond armor + diamond sword
-    -> a zombie shows up and Steve fights it off
+    -> a mob shows up and Steve fights it off: a creeper by day, a zombie by night
 
+Day or night follows the clock in Brazil (America/Sao_Paulo; override with
+MINECRAFT_TIME=day|night): the sky and the mob change accordingly.
 Ore veins grow from random commits (the pick changes daily, override it with
 MINECRAFT_SEED). Reuses the contribution fetching from generate_snake.py.
 """
@@ -19,7 +21,8 @@ import random
 import sys
 import zlib
 from collections import deque
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -87,6 +90,7 @@ ZOMBIE = {
     "M": (52, 100, 48),
     "T": (0, 150, 160),
 }
+CREEPER = {"body": (84, 170, 70), "dark": (52, 120, 46), "face": (14, 24, 14)}
 ZOMBIE_PANTS = (48, 48, 140)
 ZOMBIE_SHOES = (70, 70, 76)
 
@@ -320,6 +324,34 @@ def draw_zombie(draw, cx, feet, walk, face, hurt):
         draw.rectangle([x0 + w - 4, y, x0 + w, y + 6], fill=tint(ZOMBIE["T"]))
 
 
+def draw_creeper(draw, cx, feet, walk, face, hurt):
+    def tint(c):
+        return tuple((a + b) // 2 for a, b in zip(c, (225, 225, 225))) if hurt else c
+
+    body, dark, eye = (tint(CREEPER[k]) for k in ("body", "dark", "face"))
+    u = SCALE * 2  # one creeper "pixel"
+    x0 = int(cx) - 4 * u // 2 * 1 - u  # 6u wide head centered on cx
+    head_w, head_h = 6 * u, 6 * u
+    leg_h, torso_h = 3 * u, 5 * u
+    top = int(feet) - leg_h - torso_h - head_h
+    # legs: two pairs, front and back, with a little walk bob
+    for i, lx in enumerate((x0, x0 + head_w - 2 * u)):
+        lift = SCALE if (walk and (walk + i) % 2 == 0) else 0
+        draw.rectangle([lx, int(feet) - leg_h - lift, lx + 2 * u - 1, int(feet) - 1 - lift], fill=dark)
+    # torso and head
+    tx = x0 + u
+    draw.rectangle([tx, top + head_h, tx + 4 * u - 1, top + head_h + torso_h - 1], fill=body)
+    draw.rectangle([x0, top, x0 + head_w - 1, top + head_h - 1], fill=body)
+    for k in range(3):  # leafy speckles
+        draw.rectangle([x0 + (1 + 2 * k) * u - 2, top + (k % 2) * 2 * u + 2, x0 + (1 + 2 * k) * u, top + (k % 2) * 2 * u + 4], fill=dark)
+    # the famous face
+    draw.rectangle([x0 + u, top + u, x0 + 2 * u - 1, top + 2 * u - 1], fill=eye)
+    draw.rectangle([x0 + 4 * u, top + u, x0 + 5 * u - 1, top + 2 * u - 1], fill=eye)
+    draw.rectangle([x0 + 2 * u, top + 2 * u, x0 + 4 * u - 1, top + 4 * u - 1], fill=eye)
+    draw.rectangle([x0 + u, top + 3 * u, x0 + 2 * u - 1, top + 5 * u - 1], fill=eye)
+    draw.rectangle([x0 + 4 * u, top + 3 * u, x0 + 5 * u - 1, top + 5 * u - 1], fill=eye)
+
+
 def draw_alert(draw, cx, feet):
     x, y = int(cx), int(feet - SPRITE_H - 20)
     draw.rectangle([x - 2, y, x + 2, y + 10], fill=(230, 40, 40))
@@ -459,7 +491,7 @@ class Director:
         self.logs = 3
         self.leaves = True
         self.inv = []
-        self.zombie = None
+        self.mob = None
 
     # --- bookkeeping ---
     def add(self, **extra):
@@ -467,7 +499,7 @@ class Director:
             x=self.x, feet=self.feet, face=self.face, walk=0, swing=None, aim="side",
             tool=self.tool, armor=self.armor, crack=None, burst=None, sparkle=None,
             craft=None, jump=0, alert=False,
-            zombie=dict(self.zombie) if self.zombie else None,
+            mob=dict(self.mob) if self.mob else None,
             destroyed=set(self.destroyed), ores=dict(self.ores), logs=self.logs,
             leaves=self.leaves, inv=[tuple(i) for i in self.inv],
         )
@@ -638,32 +670,32 @@ class Director:
         for cell in order:
             self.mine(cell)
 
-    def zombie_fight(self, width):
+    def mob_fight(self, width, color):
         self.face = 1
         for _ in range(3):
             self.add(alert=True)
-        self.zombie = dict(x=float(width + 20), walk=0, face=-1, hurt=False)
+        self.mob = dict(x=float(width + 20), walk=0, face=-1, hurt=False)
         gap = 46
         phase = 0
-        while self.zombie["x"] - self.x > gap + 0.5:
+        while self.mob["x"] - self.x > gap + 0.5:
             phase += 1
-            self.zombie["x"] = max(self.x + gap, self.zombie["x"] - 30)
-            self.zombie["walk"] = phase
+            self.mob["x"] = max(self.x + gap, self.mob["x"] - 30)
+            self.mob["walk"] = phase
             self.add()
         for hit in range(3):
-            self.zombie["walk"] = 0
+            self.mob["walk"] = 0
             self.add(swing=0)
-            self.zombie.update(hurt=True, x=self.zombie["x"] + 12)
+            self.mob.update(hurt=True, x=self.mob["x"] + 12)
             self.add(swing=1)
-            self.zombie["hurt"] = False
-            if hit < 2:  # the zombie keeps coming
-                self.zombie.update(walk=hit + 1, x=max(self.x + gap, self.zombie["x"] - 12))
+            self.mob["hurt"] = False
+            if hit < 2:  # the mob keeps coming
+                self.mob.update(walk=hit + 1, x=max(self.x + gap, self.mob["x"] - 12))
                 self.add()
-        self.zombie["hurt"] = True
+        self.mob["hurt"] = True
         self.add(swing=1)
-        zx = self.zombie["x"]
-        self.zombie = None
-        self.add(burst=(zx, SKY - SPRITE_H // 2, ZOMBIE["S"]))
+        zx = self.mob["x"]
+        self.mob = None
+        self.add(burst=(zx, SKY - SPRITE_H // 2, color))
 
 
 def pick_cell(counts, rows, rng, avoid_cols, min_dist):
@@ -695,7 +727,7 @@ def grow_cluster(counts, anchor, size, rows, rng, n_weeks, avoid_cols, min_dist=
     return cluster
 
 
-def build_script(counts, n_weeks):
+def build_script(counts, n_weeks, night):
     width = PAD * 2 + n_weeks * B
     tree_w, table_w, cobble_w = layout(n_weeks)
     tree_x, table_x = col_x(tree_w), col_x(table_w)
@@ -764,8 +796,8 @@ def build_script(counts, n_weeks):
     d.tool = "sword"
     d.add()
 
-    # 7. a zombie chases Steve, who fights it off
-    d.zombie_fight(width)
+    # 7. a mob chases Steve, who fights it off (creeper by day, zombie by night)
+    d.mob_fight(width, ZOMBIE["S"] if night else CREEPER["body"])
 
     # 8. celebrate
     for _ in range(2):
@@ -779,7 +811,8 @@ def build_script(counts, n_weeks):
 class World:
     """Static layer and tile cache for one theme."""
 
-    def __init__(self, counts, n_weeks, theme):
+    def __init__(self, counts, n_weeks, theme, night):
+        self.night = night
         self.counts, self.n_weeks, self.theme = counts, n_weeks, theme
         self.dark = theme == "dark"
         self.width = PAD * 2 + n_weeks * B
@@ -821,10 +854,10 @@ class World:
         return MOSS[self.theme][level - 1]
 
     def _build_base(self):
-        img = Image.new("RGB", (self.width, self.height), SKY_COLOR[self.theme])
+        img = Image.new("RGB", (self.width, self.height), SKY_COLOR["dark" if self.night else "light"])
         draw = ImageDraw.Draw(img)
         rng = random.Random(7)
-        if self.dark:
+        if self.night:
             for _ in range(70):
                 sx, sy = rng.randrange(self.width), rng.randrange(SKY - 20)
                 draw.point((sx, sy), fill=rng.choice([(200, 200, 230), (120, 130, 170)]))
@@ -845,8 +878,8 @@ class World:
         return img
 
 
-def render(frames, counts, n_weeks, theme, out_path):
-    world = World(counts, n_weeks, theme)
+def render(frames, counts, n_weeks, theme, night, out_path):
+    world = World(counts, n_weeks, theme, night)
     dark = world.dark
     rng = random.Random(3)
     tree_w, table_w, _ = layout(n_weeks)
@@ -897,9 +930,9 @@ def render(frames, counts, n_weeks, theme, out_path):
         if f["craft"] is not None:
             draw_craft(draw, table_x, SKY - B, f["craft"])
 
-        z = f["zombie"]
+        z = f["mob"]
         if z is not None:
-            draw_zombie(draw, z["x"], SKY, z["walk"], z["face"], z["hurt"])
+            (draw_zombie if night else draw_creeper)(draw, z["x"], SKY, z["walk"], z["face"], z["hurt"])
         draw_steve(draw, f["x"], f["feet"] - f["jump"], f["walk"], f["face"], f["swing"],
                    f["aim"], f["tool"], f["armor"])
         if f["alert"]:
@@ -922,6 +955,14 @@ def render(frames, counts, n_weeks, theme, out_path):
     print(f"wrote {out_path} ({len(images)} frames)")
 
 
+def is_night():
+    forced = os.environ.get("MINECRAFT_TIME")
+    if forced:
+        return forced.lower() == "night"
+    hour = datetime.now(ZoneInfo("America/Sao_Paulo")).hour
+    return not 6 <= hour < 18
+
+
 def main():
     out_dir = sys.argv[1] if len(sys.argv) > 1 else "dist"
     os.makedirs(out_dir, exist_ok=True)
@@ -936,9 +977,11 @@ def main():
         )
         counts, n_weeks = build_grid(weeks)
 
-    frames = build_script(counts, n_weeks)
-    render(frames, counts, n_weeks, "light", os.path.join(out_dir, "minecraft.gif"))
-    render(frames, counts, n_weeks, "dark", os.path.join(out_dir, "minecraft-dark.gif"))
+    night = is_night()
+    print("night" if night else "day")
+    frames = build_script(counts, n_weeks, night)
+    render(frames, counts, n_weeks, "light", night, os.path.join(out_dir, "minecraft.gif"))
+    render(frames, counts, n_weeks, "dark", night, os.path.join(out_dir, "minecraft-dark.gif"))
 
 
 if __name__ == "__main__":
